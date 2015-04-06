@@ -121,6 +121,7 @@ int main(int argc, char* argv[]) {
 		fprintf(stderr, "Error reading key.\n");
 		return 1;
 	}
+	fclose(keyfile);
 	KeyExpansion();
 	
 	//TODO: loop
@@ -149,7 +150,7 @@ int main(int argc, char* argv[]) {
 // 		}
 	}
 	
-	//fclose
+	fclose(infile);
 	return 0;
 }
 
