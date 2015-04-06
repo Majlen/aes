@@ -1,6 +1,8 @@
 /**
  * aes.c
  * AES encryptor/decryptor
+ * 
+ * Uses PKCS#7 padding and Cipher Block Chaining
  *
  * @author Milan Sevcik (majlen@civ.zcu.cz)
  */
@@ -11,6 +13,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 
@@ -122,6 +125,7 @@ int main(int argc, char* argv[]) {
 					return 1;
 				}
 			}
+			break;
 			case 'i':
 				//Input file
 				infile = fopen(optarg, "rb");
@@ -142,33 +146,130 @@ int main(int argc, char* argv[]) {
 	fclose(keyfile);
 	KeyExpansion();
 	
-	//TODO: loop
-	//Fill the block
-	for (int i = 0; i < 16; i++) {
-		int byte = getc(infile);
-		if (byte >= 0)
-			state[i] = byte;
-		else {
-			//End of stream
-			for (int j = i; j < 16; j++) {
-				state[j] = 0;
+	//Random initialization vector for CBC block mode
+	uint8_t iv[16];
+	if (aesfunc == Cipher) {
+		srand((unsigned int)time(NULL));
+		for (int i = 0; i < 16; i += sizeof(int)) {
+			union {
+				int xbytes;
+				uint8_t byte[sizeof(int)];
+			} temp;
+			temp.xbytes = rand();
+			for (int j = 0; j < sizeof(int); j++) {
+				iv[i+j] = temp.byte[j];
+				putc(iv[i+j], stdout);
 			}
-			break;
+		}
+	} else {
+		for (int i = 0; i < 16; i++) {
+			int byte = getc(infile);
+			if (byte >= 0)
+				iv[i] = byte;
+			else {
+				fprintf(stderr, "Data corruption - size incorrect, it should always be multiple of 16 bytes. Quitting.\n");
+				return 1;
+			}
 		}
 	}
 	
-	aesfunc();
-	
-	//Print the block
-	for (int i = 0; i < 16; i++) {
-		putc(state[i], stdout);
-// 		printf("%x ", state[i]);
-// 		if ((i+1) % 4 == 0) {
-// 			printf("\n");
-// 		}
+	state[0] = getc(infile);
+	if (state[0] < 0) {
+		fprintf(stderr, "Data corruption - size incorrect, it should always be multiple of 16 bytes. Quitting.\n");
+		return 1;
 	}
 	
-	fclose(infile);
+	int finished = 0;
+	while (!finished) {
+		//Fill the block
+		for (int i = 1; i < 16; i++) {
+			int byte = getc(infile);
+			if (byte >= 0)
+				state[i] = byte;
+			else {
+				//End of stream
+				if (aesfunc == Cipher) {
+					//Add padding PKCS#7
+					if ((i == 1) && (state[0] == 16)) {
+						for (int j = i; j < 16; j++) {
+							state[j] = 16;
+						}
+					} else {
+						for (int j = i; j < 16; j++) {
+							state[j] = 16-i;
+						}
+					}
+				} else {
+					fprintf(stderr, "Data corruption - size incorrect, it should always be multiple of 16 bytes. Quitting.\n");
+					return 1;
+				}
+				finished = 1;
+				break;
+			}
+		}
+		
+		//Step of CBC - XOR message with IV
+		uint8_t nextiv[16];
+		if (aesfunc == Cipher) {
+			for (int i = 0; i < 16; i++) {
+				state[i] = state[i] ^ iv[i];
+			}
+		} else {
+			memcpy(nextiv, state, 16);
+		}
+		
+		aesfunc();
+		
+		int temp = getc(infile);
+		
+		int bytes_to_print = 16;
+		//Step of CBC - XOR deciphered message with IV
+		if (aesfunc == Decipher) {
+			for (int i = 0; i < 16; i++) {
+				state[i] = state[i] ^ iv[i];
+			}
+			memcpy(iv, nextiv, 16);
+			
+			if (temp < 0) {
+				finished = 1;
+				
+				//Delete padding - it should always be present
+				if ((state[15] <= 16) && (state[15] > 0)) {
+					for (int i = 1; i < state[15]; i++) {
+						if (state[15-i] != state[15]) {
+							fprintf(stderr, "Data corruption - padding incorrect. Quitting.\n");
+							return 1;
+						}
+					}
+					bytes_to_print = 16-state[15];
+				} else {
+					fprintf(stderr, "Data corruption - padding incorrect. Quitting.\n");
+					return 1;
+				}
+			}
+		} else {
+			memcpy(iv, state, 16);
+		}
+		
+		//Print the block
+		for (int i = 0; i < bytes_to_print; i++) {
+			putc(state[i], stdout);
+			//printf("%x ", state[i]);
+			//if ((i+1) % 4 == 0) {
+			//	printf("\n");
+			//}
+		}
+		
+		if (temp < 0) {
+			state[0] = 16;
+		} else {
+			state[0] = temp;
+		}
+	}
+	
+	if (infile != stdin) {
+		fclose(infile);
+	}
 	return 0;
 }
 
@@ -191,7 +292,7 @@ void help() {
 void Cipher() {
 	//Can omit the index - first 16B are used
 	AddRoundKey(key);
-
+	
 	//Last round omits the MixColumns step - starting with 1
 	for (int i = 1; i < rounds; i++) {
 		SubBytes();
@@ -199,7 +300,7 @@ void Cipher() {
 		MixColumns();
 		AddRoundKey(&key[i*16]);
 	}
-
+	
 	//Last round
 	SubBytes();
 	ShiftRows();
@@ -211,7 +312,7 @@ void Cipher() {
  */
 void Decipher() {
 	AddRoundKey(&key[rounds*16]);
-
+	
 	//Last round omits the InvMixColumns step - ending with 1
 	for (int i = rounds-1; i > 0; i--) {
 		InvShiftRows();
@@ -219,7 +320,7 @@ void Decipher() {
 		AddRoundKey(&key[i*16]);
 		InvMixColumns();
 	}
-
+	
 	//Last round
 	InvShiftRows();
 	InvSubBytes();
@@ -266,7 +367,7 @@ void KeyExpansion() {
 	uint32_t* key32 = (uint32_t*)key;
 	
 	for (int i = keyWords; i < 4*(rounds+1); i++) {
-
+		
 		temp = htonl(key32[i-1]);
 		
 		if ((i % keyWords) == 0) {
@@ -297,7 +398,7 @@ void ShiftRows() {
 		state[1+i*4] = state[1+(1+i)*4];
 	}
 	state[13] = temp1;
-
+	
 	//Row 3
 	temp1 = state[2];
 	temp2 = state[6];
@@ -306,7 +407,7 @@ void ShiftRows() {
 	}
 	state[10] = temp1;
 	state[14] = temp2;
-
+	
 	//Row 4 (shift left by 3 is the same as shift right by 1)
 	temp1 = state[15];
 	for (int i = 2; i >= 0; i--) {
@@ -365,7 +466,7 @@ void InvShiftRows() {
 		state[1+(i+1)*4] = state[1+i*4];
 	}
 	state[1] = temp1;
-
+	
 	//Row 3
 	temp1 = state[2];
 	temp2 = state[6];
@@ -374,7 +475,7 @@ void InvShiftRows() {
 	}
 	state[10] = temp1;
 	state[14] = temp2;
-
+	
 	//Row 4 (shift right by 3 is the same as shift left by 1)
 	temp1 = state[3];
 	for (int i = 0; i < 3; i++) {
@@ -406,11 +507,11 @@ void InvMixColumns() {
 			lookup[j][2] = xtime(lookup[j][1]);
 			lookup[j][3] = xtime(lookup[j][2]);
 		}
-
-                state[i*4] = (lookup[0][3] ^ lookup[0][2] ^ lookup[0][1]) ^ (lookup[1][3] ^ lookup[1][1] ^ lookup[1][0]) ^ (lookup[2][3] ^ lookup[2][2] ^ lookup[2][0]) ^ (lookup[3][3] ^ lookup[3][0]);
-                state[i*4+1] = (lookup[0][3] ^ lookup[0][0]) ^ (lookup[1][3] ^ lookup[1][2] ^ lookup[1][1]) ^ (lookup[2][3] ^ lookup[2][1] ^ lookup[2][0]) ^ (lookup[3][3] ^ lookup[3][2] ^ lookup[3][0]);
-                state[i*4+2] = (lookup[0][3] ^ lookup[0][2] ^ lookup[0][0]) ^ (lookup[1][3] ^ lookup[1][0]) ^ (lookup[2][3] ^ lookup[2][2] ^ lookup[2][1]) ^ (lookup[3][3] ^ lookup[3][1] ^ lookup[3][0]);
-                state[i*4+3] = (lookup[0][3] ^ lookup[0][1] ^ lookup[0][0]) ^ (lookup[1][3] ^ lookup[1][2] ^ lookup[1][0]) ^ (lookup[2][3] ^ lookup[2][0]) ^ (lookup[3][3] ^ lookup[3][2] ^ lookup[3][1]);
+		
+		state[i*4] = (lookup[0][3] ^ lookup[0][2] ^ lookup[0][1]) ^ (lookup[1][3] ^ lookup[1][1] ^ lookup[1][0]) ^ (lookup[2][3] ^ lookup[2][2] ^ lookup[2][0]) ^ (lookup[3][3] ^ lookup[3][0]);
+		state[i*4+1] = (lookup[0][3] ^ lookup[0][0]) ^ (lookup[1][3] ^ lookup[1][2] ^ lookup[1][1]) ^ (lookup[2][3] ^ lookup[2][1] ^ lookup[2][0]) ^ (lookup[3][3] ^ lookup[3][2] ^ lookup[3][0]);
+		state[i*4+2] = (lookup[0][3] ^ lookup[0][2] ^ lookup[0][0]) ^ (lookup[1][3] ^ lookup[1][0]) ^ (lookup[2][3] ^ lookup[2][2] ^ lookup[2][1]) ^ (lookup[3][3] ^ lookup[3][1] ^ lookup[3][0]);
+		state[i*4+3] = (lookup[0][3] ^ lookup[0][1] ^ lookup[0][0]) ^ (lookup[1][3] ^ lookup[1][2] ^ lookup[1][0]) ^ (lookup[2][3] ^ lookup[2][0]) ^ (lookup[3][3] ^ lookup[3][2] ^ lookup[3][1]);
 	}
 }
 
