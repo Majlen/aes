@@ -1,3 +1,10 @@
+/**
+ * aes.c
+ * AES encryptor/decryptor
+ *
+ * @author Milan Sevcik (majlen@civ.zcu.cz)
+ */
+
 #define _POSIX_C_SOURCE 2
 
 #include <stdio.h>
@@ -7,6 +14,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 
+//Function definitions
 void help();
 void Cipher();
 void Decipher();
@@ -22,7 +30,9 @@ uint32_t SubWord(uint32_t);
 uint32_t RotWord(uint32_t);
 uint8_t xtime(uint8_t);
 
+//Bytes containing current state in every step
 uint8_t state[16];
+//S-Box
 uint8_t s_box[256] = {
 	0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB, 0x76,
 	0xCA, 0x82, 0xC9, 0x7D, 0xFA, 0x59, 0x47, 0xF0, 0xAD, 0xD4, 0xA2, 0xAF, 0x9C, 0xA4, 0x72, 0xC0,
@@ -41,6 +51,7 @@ uint8_t s_box[256] = {
 	0xE1, 0xF8, 0x98, 0x11, 0x69, 0xD9, 0x8E, 0x94, 0x9B, 0x1E, 0x87, 0xE9, 0xCE, 0x55, 0x28, 0xDF,
 	0x8C, 0xA1, 0x89, 0x0D, 0xBF, 0xE6, 0x42, 0x68, 0x41, 0x99, 0x2D, 0x0F, 0xB0, 0x54, 0xBB, 0x16
 };
+//Inverse S-Box
 uint8_t invs_box[256] = {
 	0x52, 0x09, 0x6A, 0xD5, 0x30, 0x36, 0xA5, 0x38, 0xBF, 0x40, 0xA3, 0x9E, 0x81, 0xF3, 0xD7, 0xFB,
 	0x7C, 0xE3, 0x39, 0x82, 0x9B, 0x2F, 0xFF, 0x87, 0x34, 0x8E, 0x43, 0x44, 0xC4, 0xDE, 0xE9, 0xCB,
@@ -59,12 +70,19 @@ uint8_t invs_box[256] = {
 	0xA0, 0xE0, 0x3B, 0x4D, 0xAE, 0x2A, 0xF5, 0xB0, 0xC8, 0xEB, 0xBB, 0x3C, 0x83, 0x53, 0x99, 0x61,
 	0x17, 0x2B, 0x04, 0x7E, 0xBA, 0x77, 0xD6, 0x26, 0xE1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0C, 0x7D
 };
-//In the case of AES256 the expanded key is 240B long (or 60 words)
+//Key - In the case of AES256 the expanded key is 240B long (or 60 words)
 uint8_t key[240];
-//Default of AES128
+//Key length in 32b words - default is for AES128
 uint8_t keyWords = 4;
+//Rounds of cipher - default is for AES128
 uint8_t rounds = 10;
 
+/**
+ * Entry point of program
+ * @param argc argument count
+ * @param argv arguments processed by getopt
+ * @returns Return code of program (0 - success, 1 - failure)
+ */
 int main(int argc, char* argv[]) {
 	void (*aesfunc)() = NULL;
 	FILE* keyfile = NULL;
@@ -154,6 +172,9 @@ int main(int argc, char* argv[]) {
 	return 0;
 }
 
+/**
+ * Prints help
+ */
 void help() {
 	printf("Usage:\n");
 	printf("-h\tPrint (this) help\n");
@@ -164,6 +185,9 @@ void help() {
 	printf("-i\tInput file (default stdin)\n");
 }
 
+/**
+ * Function performing encryption
+ */
 void Cipher() {
 	//Can omit the index - first 16B are used
 	AddRoundKey(key);
@@ -182,6 +206,9 @@ void Cipher() {
 	AddRoundKey(&key[rounds*16]);
 }
 
+/**
+ * Function performing decryption
+ */
 void Decipher() {
 	AddRoundKey(&key[rounds*16]);
 
@@ -199,6 +226,11 @@ void Decipher() {
 	AddRoundKey(key);
 }
 
+/**
+ * Function performing 32 bit word substitution using S-Box, used in KeyExpansion
+ * @param word word to be substituted
+ * @returns substituted word
+ */
 inline uint32_t SubWord(uint32_t word) {
 	uint8_t* wordB = (uint8_t*)&word;
 	for (int i = 0; i < 4; i++) {
@@ -208,10 +240,18 @@ inline uint32_t SubWord(uint32_t word) {
 	return word;
 }
 
+/**
+ * Function performing 32 bit word rotation by 8 bits, used in KeyExpansion
+ * @param word word to be rotated
+ * @returns rotated word
+ */
 inline uint32_t RotWord(uint32_t word) {
 	return (word << 8) | (word >> (32-8));
 }
 
+/**
+ * Key expansion process
+ */
 void KeyExpansion() {
 	//Round constant
 	//FIXME: Endians
@@ -241,6 +281,13 @@ void KeyExpansion() {
 	}
 }
 
+/**
+ * Phase of the algorithm rotating rows of state
+ * Row 0 is not rotated
+ * Row 1 is rotated by 1 byte to the left
+ * Row 2 is rotated by 2 bytes to the left
+ * Row 3 is rotated by 3 bytes to the left (or 1 byte to the right)
+ */
 void ShiftRows() {
 	uint8_t temp1, temp2;
 	
@@ -268,13 +315,19 @@ void ShiftRows() {
 	state[3] = temp1;
 }
 
+/**
+ * Phase of the algorithm substituting bytes of state with bytes of S-Box
+ */
 void SubBytes() {
 	for (int i = 0; i < 16; i++) {
 		state[i] = s_box[state[i]];
 	}
 }
 
-
+/**
+ * Phase of the algorithm mixing columns of state
+ * For more info see NIST AES specification
+ */
 void MixColumns() {
 	for (int i = 0; i < 4; i++) {
 		uint8_t temp[4];
@@ -286,12 +339,23 @@ void MixColumns() {
 	}
 }
 
+/**
+ * Phase of the algorithm XORing state with round key
+ * @param key round key used in this phase
+ */
 void AddRoundKey(uint8_t* key) {
 	for (int i = 0; i < 16; i++) {
 		state[i] = state[i] ^ key[i];
 	}
 }
 
+/**
+ * Inverse function to ShiftRows, rotating rows of state
+ * Row 0 is not rotated
+ * Row 1 is rotated by 1 byte to the right
+ * Row 2 is rotated by 2 bytes to the right (or 2 bytes to the left)
+ * Row 3 is rotated by 3 bytes to the right (or 1 byte to the left)
+ */
 void InvShiftRows() {
 	uint8_t temp1, temp2;
 	
@@ -319,12 +383,20 @@ void InvShiftRows() {
 	state[15] = temp1;
 }
 
+/**
+ * Inverse function to SubBytes
+ * Substituting bytes of state with bytes of Inverse S-Box
+ */
 void InvSubBytes() {
 	for (int i = 0; i < 16; i++) {
 		state[i] = invs_box[state[i]];
 	}
 }
 
+/**
+ * Inverse function to MixColumns
+ * For More info see NIST AES specification
+ */
 void InvMixColumns() {
 	for (int i = 0; i < 4; i++) {
 		uint8_t lookup[4][4];
@@ -342,6 +414,12 @@ void InvMixColumns() {
 	}
 }
 
+/**
+ * Function used to make multiplication in Gaulois field (finite field),
+ * multitplies number by 2
+ * @param num number to be multiplied by 2
+ * @returns number multiplied by 2
+ */
 inline uint8_t xtime(uint8_t num) {
 	if (num / 128 == 0)
 		return (num << 1);
